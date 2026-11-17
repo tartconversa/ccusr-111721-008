@@ -2,6 +2,7 @@ import hashlib
 import json
 
 from .audit import write
+from .catalog import Catalog, CorrectionError
 from .grants import Grants
 from .policy import Policies
 from .products import Products
@@ -10,6 +11,7 @@ from .products import Products
 class Delivery:
     def __init__(self, connection):
         self.connection = connection
+        self.catalog = Catalog(connection)
         self.grants = Grants(connection)
         self.policies = Policies(connection)
         self.products = Products(connection)
@@ -29,8 +31,16 @@ class Delivery:
         reasons, revisions = [], {}
         for asset in inputs:
             source_id = asset["source_id"]
-            if asset["state"] != "active" or not asset["source_active"]:
+            if not asset["source_active"]:
                 reasons.append({"source": source_id, "reason": "inactive"})
+            # 输入必须仍是当前有效版本；被更正或更正链异常的旧编号不得再交付
+            try:
+                head = self.catalog.effective(asset["id"])
+            except CorrectionError as exc:
+                reasons.append({"source": source_id, "asset": asset["id"], "reason": "unresolved", "detail": str(exc)})
+            else:
+                if head != asset["id"]:
+                    reasons.append({"source": source_id, "asset": asset["id"], "reason": "superseded", "effective": head})
             if not self.grants.permits(source_id, recipient, purpose, at):
                 reasons.append({"source": source_id, "reason": "grant"})
             decision, policy_revision = self.policies.decision(asset["jurisdiction"], asset["classification"], purpose)
@@ -49,3 +59,27 @@ class Delivery:
             )
             write(self.connection, at, recipient, "delivery.accept", delivery_id, {"product": product_id, "revision": revision, "inputs": [a["id"] for a in inputs]})
         return dict(self.connection.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone())
+
+    def receipt(self, delivery_id):
+        # 凭据保持原始输入不变，逐项标示交付后是否被更正、当前有效版本指向何处
+        row = self.connection.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+        if row is None:
+            raise KeyError(delivery_id)
+        inputs = []
+        for asset in self.products.inputs(row["product_id"], row["product_revision"]):
+            try:
+                head = self.catalog.effective(asset["id"])
+                issue = None
+            except CorrectionError as exc:
+                head, issue = None, str(exc)
+            inputs.append({
+                "asset": asset["id"],
+                "requested": asset["requested_asset_id"],
+                "digest": asset["digest"],
+                "state": asset["state"],
+                "corrects": asset["corrects"],
+                "effective": head,
+                "later_corrected": head is not None and head != asset["id"],
+                "issue": issue,
+            })
+        return {"delivery": dict(row), "inputs": inputs}

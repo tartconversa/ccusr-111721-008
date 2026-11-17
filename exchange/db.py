@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS fields (
 CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(id),
     schema_version INTEGER NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL,
-    received_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active'
+    received_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active',
+    corrects TEXT REFERENCES assets(id)
 );
 CREATE TABLE IF NOT EXISTS grants (
     id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(id),
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS product_inputs (
     product_id TEXT NOT NULL, product_revision INTEGER NOT NULL,
     asset_id TEXT NOT NULL REFERENCES assets(id),
+    requested_asset_id TEXT,
     PRIMARY KEY(product_id,product_revision,asset_id),
     FOREIGN KEY(product_id,product_revision) REFERENCES products(id,revision)
 );
@@ -52,8 +54,19 @@ CREATE TABLE IF NOT EXISTS audit (
 """
 
 
+def _migrate(connection):
+    # 旧库补充更正关系与血缘列
+    asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
+    if "corrects" not in asset_columns:
+        connection.execute("ALTER TABLE assets ADD COLUMN corrects TEXT REFERENCES assets(id)")
+    input_columns = {row[1] for row in connection.execute("PRAGMA table_info(product_inputs)")}
+    if "requested_asset_id" not in input_columns:
+        connection.execute("ALTER TABLE product_inputs ADD COLUMN requested_asset_id TEXT")
+
+
 def connect(path):
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA)
+    _migrate(connection)
     return connection

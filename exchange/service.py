@@ -3,6 +3,7 @@ from .catalog import Catalog
 from .db import connect
 from .delivery import Delivery
 from .grants import Grants
+from .lineage import Lineage
 from .policy import Policies
 from .products import Products
 
@@ -15,6 +16,10 @@ class Exchange:
         self.policies = Policies(self.connection)
         self.products = Products(self.connection)
         self.delivery = Delivery(self.connection)
+        self.lineage = Lineage(self.connection)
+
+    def impact(self, asset_id):
+        return self.lineage.impact(asset_id)
 
     def history(self, subject):
         return history(self.connection, subject)
